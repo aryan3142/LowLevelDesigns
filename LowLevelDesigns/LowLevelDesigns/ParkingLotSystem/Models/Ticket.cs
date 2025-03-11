@@ -13,10 +13,11 @@ namespace LowLevelDesigns.ParkingLotSystem.Models
         public DateTime ExitTime { get; set; }
         public Slot SlotDetail { get; set; }
         public Vehicle Vehicle { get; set; }
+        public Payment PaymentDetail { get; set; }
 
         public Ticket(Slot slotDetail)
         {
-            TicketNumber = new Random().Next(1000, 99999);
+            TicketNumber = new Random().Next(1000, 999999);
             EntryTime = DateTime.Now;
             SlotDetail = slotDetail;
         }

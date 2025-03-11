@@ -24,8 +24,19 @@ public class Floor
         return Slots.Where(x => x.IsSlotTaken == false).ToList();
     }
 
-    public bool GetSlotAvailbilityStatusForVehicleType(int vehicleType)
+    public bool GetSlotAvailbilityStatusForNonElectricVehicle(int vehicleType)
     {
         return Slots.Where(x => x.SlotType == vehicleType && x.IsSlotTaken == false).Any();
     }
+
+    public bool GetSlotAvailbilityStatusForElectricVehicle(int vehicleType)
+    {
+        return Slots.Where(x => !x.IsSlotTaken && x.IsSlotForElectric && x.SlotType == vehicleType).Any();
+    }
+
+    public bool IsFloorFull()
+    {
+        return Slots.Where(x => x.IsSlotTaken).Count() == NumberOfSlots;
+    }
+
 }
