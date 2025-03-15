@@ -1,0 +1,10 @@
+Let's walk through a very basic key-value storage engine similar to in concept to HaloDb.
+
+What is HaloDb?
+HaloDb is a persistent key-value store inspired by Bitcask, optimized for high throughput and low latency.
+Its main concept:
+1. Append-only log files: Writes go to a log file(like a WAL - write - ahead log).
+2. In-memory index: A hash map in memory pointing keys to their offset in the log file.
+3. Compaction: Periodically reqrites active keys into new log files and avoid file bloat.
+
+(Persistent in a database or storage engine means: The data you write is not lost when the program stops or the machine shuts down. It survives crashes, reboots or restarts).
