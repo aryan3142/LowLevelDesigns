@@ -16,3 +16,19 @@ Functions:
 2. Read data from log file
 3. Rebuild index
 4. Maintain a hash-map in memory with key:offset pairs
+
+Phase 2 commit:
+1. Write-Ahead Logs (WAL) -- For durability and crash recovery
+2. Compaction --> reclaims disc space by keeping only latest values for each key
+3. MemoryMappedFiles --> faster input/output operations
+4. TTL --> Key expiration support
+5. Concurrency Handling --> Thread safe read / write
+6. Snapshots / Checkpoints
+
+Step 1: Add Write-Ahead Log(WAL):
+We'll write every operation PUT/DELETE to a wal.log file before we apply changes to our data.db file.
+Changes needed:
+--> Add a wal.log file
+--> On Put(), write it to wal.log before writing it to data.db
+--> On startup, replay WAL to recover state.
+
