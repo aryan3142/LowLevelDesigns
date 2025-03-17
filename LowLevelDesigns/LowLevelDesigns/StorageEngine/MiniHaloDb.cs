@@ -10,6 +10,7 @@ namespace LowLevelDesigns.StorageEngine
     {
         private readonly string _dataFilePath = "data.db";
         private readonly string _walFilePath = "wal.log";
+        private readonly string _compactFilePath = "data_compact.db";
         private Dictionary<string, long> _index = new();
         private ReaderWriterLockSlim _lock = new();
 
@@ -70,12 +71,6 @@ namespace LowLevelDesigns.StorageEngine
             }
         }
 
-        private void AppendToWal(string key, string value)
-        {
-            using var writer = new StreamWriter(_walFilePath, true);
-            writer.Write($"PUT|{key}|{value}");
-        }
-
         // Read value using offset for index
         public string Get(string key)
         {
@@ -108,6 +103,50 @@ namespace LowLevelDesigns.StorageEngine
             {
                 _lock.ExitReadLock();
             }
+        }
+
+        public void Compact()
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                var writestream = new FileStream(_compactFilePath, FileMode.Append, FileAccess.Write);
+                Dictionary<string, long> newIndex = new();
+
+                foreach (var kvp in _index)
+                {
+                    string key = kvp.Key;
+                    string value = Get(key);
+
+                    byte[] keyBytes = Encoding.UTF8.GetBytes(key);
+                    byte[] valuesBytes = Encoding.UTF8.GetBytes(value);
+
+                    long offset = writestream.Position;
+
+                    writestream.Write(BitConverter.GetBytes(keyBytes.Length));
+                    writestream.Write(BitConverter.GetBytes(valuesBytes.Length));
+                    writestream.Write(keyBytes);
+                    writestream.Write(valuesBytes);
+
+                    newIndex[key] = offset;
+                }
+
+                File.Replace(_compactFilePath, _dataFilePath, null);
+                _index = newIndex;
+
+                File.WriteAllText(_walFilePath, string.Empty);
+
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        private void AppendToWal(string key, string value)
+        {
+            using var writer = new StreamWriter(_walFilePath, true);
+            writer.Write($"PUT|{key}|{value}");
         }
 
         private void RecoverFromWal()

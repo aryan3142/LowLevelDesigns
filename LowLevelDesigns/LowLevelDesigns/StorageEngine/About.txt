@@ -32,3 +32,16 @@ Changes needed:
 --> On Put(), write it to wal.log before writing it to data.db
 --> On startup, replay WAL to recover state.
 
+
+Step 2: Add Compaction support
+Since the database is append only, multiple updates to a key, results in duplicate old keys and values in the file
+This processs will remove old keys and retain only the lates values for each key. Updates the index accordingly.
+What we will do ?
+--> A method Compact():
+ --> Iterates through current key value pairs
+ --> Writes them to a new file
+ --> Swaps the with the original one
+ --> clears the WAL after compaction
+
+
+
