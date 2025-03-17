@@ -83,9 +83,34 @@ namespace LowLevelDesigns.StorageEngine
             return Encoding.UTF8.GetString(valueBuffer);
         }
 
+        // Rebuild the index from the data file
         private void RebuildIndex()
         {
-            throw new NotImplementedException();
+            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
+            long offset = 0;
+
+            while(offset < stream.Length)
+            {
+                stream.Seek(offset, SeekOrigin.Begin);
+
+                byte[] buffer = new byte[4];
+                stream.Read(buffer, 0, 4);
+
+                int keyLength = BitConverter.ToInt32(buffer);
+
+                stream.Read(buffer, 0, 4);
+                int valueLength = BitConverter.ToInt32(buffer);
+
+                byte[] keyBuffer = new byte[keyLength];
+                stream.Read(keyBuffer, 0, keyLength);
+
+                stream.Seek(valueLength, SeekOrigin.Current);
+
+                string key = Encoding.UTF8.GetString(keyBuffer);
+                _index[key] = offset;
+
+                offset = stream.Position;
+            }
         }
     }
 }

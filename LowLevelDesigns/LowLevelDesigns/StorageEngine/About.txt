@@ -8,3 +8,11 @@ Its main concept:
 3. Compaction: Periodically reqrites active keys into new log files and avoid file bloat.
 
 (Persistent in a database or storage engine means: The data you write is not lost when the program stops or the machine shuts down. It survives crashes, reboots or restarts).
+
+
+Phase 1 Commit:
+Functions:
+1. Write (key,value) to log file where the key is mapped to an offset in the file where the (key,value) are stored.
+2. Read data from log file
+3. Rebuild index
+4. Maintain a hash-map in memory with key:offset pairs
