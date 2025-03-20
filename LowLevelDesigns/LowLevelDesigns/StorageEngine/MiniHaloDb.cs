@@ -135,6 +135,8 @@ namespace LowLevelDesigns.StorageEngine
                 foreach (var kvp in _index)
                 {
                     string key = kvp.Key;
+                    if (_expiry.TryGetValue(key, out var expirytime) && DateTime.UtcNow > expirytime) continue;
+
                     string value = Get(key);
 
                     byte[] keyBytes = Encoding.UTF8.GetBytes(key);
