@@ -14,6 +14,7 @@ namespace LowLevelDesigns.StorageEngine
         private readonly string _compactFilePath = "data_compact.db";
         private MemoryMappedFile _mmf;
         private MemoryMappedViewAccessor _accessor;
+        private Dictionary<string, DateTime> _expiry = new();
         private Dictionary<string, long> _index = new();
         private ReaderWriterLockSlim _lock = new();
 
@@ -26,6 +27,12 @@ namespace LowLevelDesigns.StorageEngine
             // Rebuild index from existing file
             RecoverFromWal();
             RebuildIndex();
+        }
+
+        public void PutWithTTL(string key, string value, TimeSpan ttl)
+        {
+            Put(key, value);
+            _expiry[key] = DateTime.UtcNow.Add(ttl);
         }
 
         // Save key-value to file and update index
@@ -81,6 +88,7 @@ namespace LowLevelDesigns.StorageEngine
             try
             {
                 if (!_index.ContainsKey(key)) return null;
+                if (_expiry.TryGetValue(key, out var expiry) && DateTime.UtcNow > expiry) return null;
 
                 long offset = _index[key];
                 /*using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Read);
@@ -162,7 +170,13 @@ namespace LowLevelDesigns.StorageEngine
         private void AppendToWal(string key, string value)
         {
             using var writer = new StreamWriter(_walFilePath, true);
-            writer.Write($"PUT|{key}|{value}");
+            string data = $"PUT|{key}|{value}";
+            if (_expiry.ContainsKey(key))
+            {
+                data += $"|{_expiry[key]}";
+            }
+
+            writer.Write(data);
         }
 
         private void RecoverFromWal()
@@ -173,6 +187,11 @@ namespace LowLevelDesigns.StorageEngine
                 if (parts[0] == "PUT")
                 {
                     Put(parts[1], parts[2]);
+                }
+                if(parts.Length >= 4)
+                {
+                    var expiryDate = DateTime.Parse(parts[3]);
+                    _expiry[parts[1]] = expiryDate;
                 }
             }
         }

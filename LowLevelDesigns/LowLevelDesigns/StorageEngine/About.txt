@@ -69,5 +69,15 @@ What we will do ?
 	--> modified pages are flushed back to disc (optional)
 
 
+	Steo 4: Add TTL (Time-To-Live)
+
+	What it does?
+	--> Lets you set a key with an expiry
+	--> Expired keys wont be return
+	--> Expired keys are skipped during compaction
+
+
+
+
 
 
