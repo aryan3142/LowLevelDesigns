@@ -43,5 +43,31 @@ What we will do ?
  --> Swaps the with the original one
  --> clears the WAL after compaction
 
+ Step 3: Memory-Mapped files for faster reads
+ What are memory mapped files ? 
+ -->They map a file into memory
+ -->You can read directly a file without repeatedly opening streams
+ -->This is fast for frequent read heavy workloads
+
+ Notes on Step3:
+ * When you read/write files traditionally:
+	var stream = new FileStream("data.db",FileMode.Open);
+	stream.Read(buffer,0,buffer.Length);
+
+	You're doing:
+	--> Syscall to OS(read);
+	--> Copies data from disc to kernel memory
+	--> Every read/write has overhead and buffering
+
+	That works fine but if you are reading millions of times than its slow
+
+	Memory mapped file = File mapped to virtual memory:
+	--> OS maps the file to your process's virutal memory.
+	--> POints that memory to the file's content on disc
+	When you read from memory-mapped region, OS loads the relevant part of the file into RAM, now you can keep reading/writing without delay
+
+	--> modified pages are flushed back to disc (optional)
+
+
 
 

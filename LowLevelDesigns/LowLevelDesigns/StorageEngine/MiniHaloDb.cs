@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -11,6 +12,8 @@ namespace LowLevelDesigns.StorageEngine
         private readonly string _dataFilePath = "data.db";
         private readonly string _walFilePath = "wal.log";
         private readonly string _compactFilePath = "data_compact.db";
+        private MemoryMappedFile _mmf;
+        private MemoryMappedViewAccessor _accessor;
         private Dictionary<string, long> _index = new();
         private ReaderWriterLockSlim _lock = new();
 
@@ -80,7 +83,7 @@ namespace LowLevelDesigns.StorageEngine
                 if (!_index.ContainsKey(key)) return null;
 
                 long offset = _index[key];
-                using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Read);
+                /*using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Read);
                 fileStream.Seek(offset, SeekOrigin.Begin);
 
                 byte[] intBuffer = new byte[4];
@@ -95,14 +98,22 @@ namespace LowLevelDesigns.StorageEngine
                 fileStream.Read(keyBuffer, 0, keyLen);
 
                 byte[] valueBuffer = new byte[valLen];
-                fileStream.Read(valueBuffer, 0, valLen);
+                fileStream.Read(valueBuffer, 0, valLen);*/
 
-                return Encoding.UTF8.GetString(valueBuffer);
+                int keylen = _accessor.ReadInt32(offset);
+                int vallen = _accessor.ReadInt32(offset + 4);
+
+                long valStart = offset + 8 + keylen;
+                byte[] valBuf = new byte[vallen];
+                _accessor.ReadArray(valStart, valBuf, 0, vallen);
+
+                return Encoding.UTF8.GetString(valBuf);
             }
             finally
             {
                 _lock.ExitReadLock();
             }
+
         }
 
         public void Compact()
@@ -133,6 +144,11 @@ namespace LowLevelDesigns.StorageEngine
 
                 File.Replace(_compactFilePath, _dataFilePath, null);
                 _index = newIndex;
+
+                _mmf?.Dispose();
+                _accessor.Dispose();
+                _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
+                _accessor = _mmf.CreateViewAccessor();
 
                 File.WriteAllText(_walFilePath, string.Empty);
 
@@ -166,18 +182,17 @@ namespace LowLevelDesigns.StorageEngine
         {
             using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
             long offset = 0;
+            byte[] intBuf = new byte[4];
 
             while(offset < stream.Length)
             {
                 stream.Seek(offset, SeekOrigin.Begin);
+                stream.Read(intBuf, 0, 4);
 
-                byte[] buffer = new byte[4];
-                stream.Read(buffer, 0, 4);
+                int keyLength = BitConverter.ToInt32(intBuf);
 
-                int keyLength = BitConverter.ToInt32(buffer);
-
-                stream.Read(buffer, 0, 4);
-                int valueLength = BitConverter.ToInt32(buffer);
+                stream.Read(intBuf, 0, 4);
+                int valueLength = BitConverter.ToInt32(intBuf);
 
                 byte[] keyBuffer = new byte[keyLength];
                 stream.Read(keyBuffer, 0, keyLength);
@@ -189,6 +204,19 @@ namespace LowLevelDesigns.StorageEngine
 
                 offset = stream.Position;
             }
+
+            // Setup the memory mapped file
+            _mmf?.Dispose();
+            _accessor.Dispose();
+
+            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
+            _accessor = _mmf.CreateViewAccessor();
+        }
+
+        public void Close()
+        {
+            _accessor?.Dispose();
+            _mmf?.Dispose();
         }
     }
 }
