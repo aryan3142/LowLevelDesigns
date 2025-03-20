@@ -11,28 +11,28 @@ namespace LowLevelDesigns.StorageEngine
     {
         private readonly string _dataFilePath = "data.db";
         private readonly string _walFilePath = "wal.log";
-        private readonly string _compactFilePath = "data_compact.db";
+        private FileStream _dataStream;
         private MemoryMappedFile _mmf;
         private MemoryMappedViewAccessor _accessor;
         private Dictionary<string, DateTime> _expiry = new();
         private Dictionary<string, long> _index = new();
         private ReaderWriterLockSlim _lock = new();
 
+        /// <summary>
+        /// ctor
+        /// </summary>
         public MiniHaloDb()
         {
-            // Create file is their is no file
-            if (!File.Exists(_dataFilePath))
-                File.Create(_dataFilePath);
-
-            // Rebuild index from existing file
-            RecoverFromWal();
+            _dataStream = new FileStream(_dataFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
             RebuildIndex();
+            RecoverFromWal();
         }
 
         public void PutWithTTL(string key, string value, TimeSpan ttl)
         {
             Put(key, value);
             _expiry[key] = DateTime.UtcNow.Add(ttl);
+            AppendToWal("TTL", key, ttl.TotalSeconds.ToString());
         }
 
         // Save key-value to file and update index
@@ -41,13 +41,9 @@ namespace LowLevelDesigns.StorageEngine
             try
             {
                 _lock.EnterWriteLock();
-                AppendToWal(key,value);
-
-                // Initialize a new instance of FileStream class with specified path, creation mode and read-write access
-                using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Write);
 
                 // Gets the current position of this stream
-                long offset = fileStream.Position;
+                long offset = _dataStream.Position;
 
                 // Encodes all the character in a specified string to a sequence of bytes
                 // WHy is it required ?
@@ -61,10 +57,11 @@ namespace LowLevelDesigns.StorageEngine
                 // How many bytes to read for the key
                 // How many bytes to read for the value
                 // BitConverter.GetBytes(int) converts the length to a 4-byte binary format.
-                fileStream.Write(BitConverter.GetBytes(keyBytes.Length));
-                fileStream.Write(BitConverter.GetBytes(valueBytes.Length));
-                fileStream.Write(keyBytes);
-                fileStream.Write(valueBytes);
+                _dataStream.Write(BitConverter.GetBytes(keyBytes.Length));
+                _dataStream.Write(BitConverter.GetBytes(valueBytes.Length));
+                _dataStream.Write(keyBytes);
+                _dataStream.Write(valueBytes);
+                _dataStream.Flush();
 
                 // Now that lengths are written we can safely store the data
                 // Later when reading,
@@ -74,6 +71,8 @@ namespace LowLevelDesigns.StorageEngine
                 // and value length bytes for the value
                 // Final format: [keylength: 4 bytes for key][valuelength: 4 bytes of value][key (Nbytes][value (mbytes)]
                 _index[key] = offset;
+                _expiry.Remove(key);
+                AppendToWal("PUT", key, value);
             }
             finally
             {
@@ -124,12 +123,100 @@ namespace LowLevelDesigns.StorageEngine
 
         }
 
+        public void Delete(string key)
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                _index.Remove(key);
+                _expiry.Remove(key);
+                AppendToWal("DEL", key);
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        private void AppendToWal(string op, string key, string value = "")
+        {
+            File.AppendAllText(_walFilePath, $"{op}|{key}|{value}\n");
+        }
+
+        private void RecoverFromWal()
+        {
+            if (!File.Exists(_walFilePath)) return;
+
+            foreach (var line in File.ReadLines(_walFilePath))
+            {
+                var parts = line.Split("|");
+                if (parts.Length < 2) continue;
+
+                string op = parts[0];
+                string key = parts[1];
+
+                switch (op)
+                {
+                    case "PUT":
+                        if (parts.Length >= 3) Put(key, parts[2]);
+                        break;
+                    case "DEL":
+                        _index.Remove(key);
+                        _expiry.Remove(key);
+                        break;
+                    case "TTL":
+                        if (parts.Length >= 3 && double.TryParse(parts[2], out var seconds))
+                            _expiry[key] = DateTime.UtcNow.AddSeconds(seconds);
+                        break;
+
+                }
+            }
+        }
+
+        // Rebuild the index from the data file
+        private void RebuildIndex()
+        {
+            _index = new();
+            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
+            long offset = 0;
+            byte[] intBuf = new byte[4];
+
+            while (offset < stream.Length)
+            {
+                stream.Seek(offset, SeekOrigin.Begin);
+                stream.Read(intBuf, 0, 4);
+
+                int keyLength = BitConverter.ToInt32(intBuf);
+
+                stream.Read(intBuf, 0, 4);
+                int valueLength = BitConverter.ToInt32(intBuf);
+
+                byte[] keyBuffer = new byte[keyLength];
+                stream.Read(keyBuffer, 0, keyLength);
+
+                stream.Seek(valueLength, SeekOrigin.Current);
+
+                string key = Encoding.UTF8.GetString(keyBuffer);
+                _index[key] = offset;
+
+                offset = stream.Position;
+            }
+
+            // Setup the memory mapped file
+            _mmf?.Dispose();
+            _accessor.Dispose();
+
+            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
+            _accessor = _mmf.CreateViewAccessor();
+        }
+
         public void Compact()
         {
             _lock.EnterWriteLock();
             try
             {
-                var writestream = new FileStream(_compactFilePath, FileMode.Append, FileAccess.Write);
+                string _compactFilePath = "data_compacted.db";
+                var writestream = new FileStream(_compactFilePath, FileMode.Create, FileAccess.Write);
                 Dictionary<string, long> newIndex = new();
 
                 foreach (var kvp in _index)
@@ -167,71 +254,6 @@ namespace LowLevelDesigns.StorageEngine
             {
                 _lock.ExitWriteLock();
             }
-        }
-
-        private void AppendToWal(string key, string value)
-        {
-            using var writer = new StreamWriter(_walFilePath, true);
-            string data = $"PUT|{key}|{value}";
-            if (_expiry.ContainsKey(key))
-            {
-                data += $"|{_expiry[key]}";
-            }
-
-            writer.Write(data);
-        }
-
-        private void RecoverFromWal()
-        {
-            foreach(var line in File.ReadLines(_walFilePath))
-            {
-                var parts = line.Split("|");
-                if (parts[0] == "PUT")
-                {
-                    Put(parts[1], parts[2]);
-                }
-                if(parts.Length >= 4)
-                {
-                    var expiryDate = DateTime.Parse(parts[3]);
-                    _expiry[parts[1]] = expiryDate;
-                }
-            }
-        }
-
-        // Rebuild the index from the data file
-        private void RebuildIndex()
-        {
-            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
-            long offset = 0;
-            byte[] intBuf = new byte[4];
-
-            while(offset < stream.Length)
-            {
-                stream.Seek(offset, SeekOrigin.Begin);
-                stream.Read(intBuf, 0, 4);
-
-                int keyLength = BitConverter.ToInt32(intBuf);
-
-                stream.Read(intBuf, 0, 4);
-                int valueLength = BitConverter.ToInt32(intBuf);
-
-                byte[] keyBuffer = new byte[keyLength];
-                stream.Read(keyBuffer, 0, keyLength);
-
-                stream.Seek(valueLength, SeekOrigin.Current);
-
-                string key = Encoding.UTF8.GetString(keyBuffer);
-                _index[key] = offset;
-
-                offset = stream.Position;
-            }
-
-            // Setup the memory mapped file
-            _mmf?.Dispose();
-            _accessor.Dispose();
-
-            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
-            _accessor = _mmf.CreateViewAccessor();
         }
 
         public void Close()
