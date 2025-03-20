@@ -256,6 +256,65 @@ namespace LowLevelDesigns.StorageEngine
             }
         }
 
+        public void CreateSnapShot(string filePath = "snapshot.meta")
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                using var writer = new BinaryWriter(File.Open(filePath, FileMode.Create));
+
+                writer.Write(_index.Count);
+                foreach(var kvp in _index)
+                {
+                    writer.Write(kvp.Key);
+                    writer.Write(kvp.Value);
+                }
+
+                writer.Write(_expiry.Count);
+                foreach (var kvp in _expiry)
+                {
+                    writer.Write(kvp.Key);
+                    writer.Write(kvp.Value.ToBinary());
+                }
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        public void LoadSnapshot(string filePath = "snapshot.meta")
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                using var reader = new BinaryReader(File.Open(filePath, FileMode.Open));
+                int count = reader.ReadInt32();
+                _index = new Dictionary<string, long>();
+                for (int i = 0; i < count; i++)
+                {
+                    var key = reader.ReadString();
+                    var offset = reader.ReadInt64();
+                    _index[key] = offset;
+                }
+
+                int ttlcount = reader.ReadInt32();
+                _expiry = new Dictionary<string, DateTime>();
+                for (int i = 0; i < ttlcount; i++)
+                {
+                    string key = reader.ReadString();
+                    DateTime expiry = DateTime.FromBinary(reader.ReadInt64());
+                    _expiry[key] = expiry;
+                }
+
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+
         public void Close()
         {
             _accessor?.Dispose();

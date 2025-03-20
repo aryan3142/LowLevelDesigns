@@ -77,6 +77,11 @@ What we will do ?
 	--> Expired keys are skipped during compaction
 
 
+	Step 5: Add Snapshot / Checkpoint
+	What we'll do ?
+	--> Save current index +TTL metadata
+	--> On startup optionally load the snapshot instead of replying WAL
+
 
 
 
