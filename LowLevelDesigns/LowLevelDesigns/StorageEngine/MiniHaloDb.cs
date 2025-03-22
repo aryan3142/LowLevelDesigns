@@ -26,6 +26,7 @@ namespace LowLevelDesigns.StorageEngine
         private ReaderWriterLockSlim _lock = new();
         private readonly object ttlLock = new();
         private BloomFilter bloomFilter;
+        private LRUCache cache;
 
         /// <summary>
         /// ctor
@@ -33,6 +34,7 @@ namespace LowLevelDesigns.StorageEngine
         public MiniHaloDb()
         {
             bloomFilter = new BloomFilter(10000, 3);
+            cache = new LRUCache(10000);
             if (!Directory.Exists(dataDir))
                 Directory.CreateDirectory(dataDir);
 
@@ -80,6 +82,7 @@ namespace LowLevelDesigns.StorageEngine
             {
                 _lock.EnterWriteLock();
 
+                cache.AddKey(key, value);
                 // Gets the current position of this stream
                 long offset = activeSegmentStream.Position;
 
@@ -138,6 +141,9 @@ namespace LowLevelDesigns.StorageEngine
             {
                 if (_expiry.TryGetValue(key, out var expiry) && DateTime.UtcNow > expiry) return null;
             }
+
+            string valueFromCache = cache.Get(key);
+            if (!string.IsNullOrWhiteSpace(valueFromCache)) return valueFromCache;
 
             _lock.EnterReadLock();
             try
