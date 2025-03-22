@@ -31,15 +31,19 @@
                 lru.Remove(cache[key]);
                 lru.AddFirst(cache[key]);
             }
-            else
+            else if(lru.Count >= capacity)
             {
-                if (lru.Count == capacity)
+                var node = lru.Last;
+                if(node != null)
                 {
                     lru.RemoveLast();
+                    cache.Remove(node.Value.value);
                 }
-
-                lru.AddFirst((key, value));
             }
+
+            var newNode = new LinkedListNode<(string key, string value)>((key, value));
+            lru.AddFirst(newNode);
+            cache[key] = newNode;
         }
     }
 }
