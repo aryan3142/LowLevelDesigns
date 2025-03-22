@@ -17,6 +17,8 @@ namespace LowLevelDesigns.StorageEngine
         private Dictionary<string, DateTime> _expiry = new();
         private Dictionary<string, long> _index = new();
         private ReaderWriterLockSlim _lock = new();
+        private readonly object ttlLock = new();
+        private BloomFilter bloomFilter;
 
         /// <summary>
         /// ctor
@@ -24,14 +26,19 @@ namespace LowLevelDesigns.StorageEngine
         public MiniHaloDb()
         {
             _dataStream = new FileStream(_dataFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            bloomFilter = new BloomFilter(10000, 3);
             RebuildIndex();
             RecoverFromWal();
+            StartTTLBackgroundCleanup();
         }
 
         public void PutWithTTL(string key, string value, TimeSpan ttl)
         {
             Put(key, value);
-            _expiry[key] = DateTime.UtcNow.Add(ttl);
+            lock (ttlLock)
+            {
+                _expiry[key] = DateTime.UtcNow.Add(ttl);
+            }
             AppendToWal("TTL", key, ttl.TotalSeconds.ToString());
         }
 
@@ -73,6 +80,7 @@ namespace LowLevelDesigns.StorageEngine
                 _index[key] = offset;
                 _expiry.Remove(key);
                 AppendToWal("PUT", key, value);
+                bloomFilter.Add(key);
             }
             finally
             {
@@ -83,11 +91,17 @@ namespace LowLevelDesigns.StorageEngine
         // Read value using offset for index
         public string Get(string key)
         {
+            if (!bloomFilter.MightContain(key)) return null;
+            
+            lock (ttlLock)
+            {
+                if (_expiry.TryGetValue(key, out var expiry) && DateTime.UtcNow > expiry) return null;
+            }
+
             _lock.EnterReadLock();
             try
             {
                 if (!_index.ContainsKey(key)) return null;
-                if (_expiry.TryGetValue(key, out var expiry) && DateTime.UtcNow > expiry) return null;
 
                 long offset = _index[key];
                 /*using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Read);
@@ -136,78 +150,6 @@ namespace LowLevelDesigns.StorageEngine
             {
                 _lock.ExitWriteLock();
             }
-        }
-
-        private void AppendToWal(string op, string key, string value = "")
-        {
-            File.AppendAllText(_walFilePath, $"{op}|{key}|{value}\n");
-        }
-
-        private void RecoverFromWal()
-        {
-            if (!File.Exists(_walFilePath)) return;
-
-            foreach (var line in File.ReadLines(_walFilePath))
-            {
-                var parts = line.Split("|");
-                if (parts.Length < 2) continue;
-
-                string op = parts[0];
-                string key = parts[1];
-
-                switch (op)
-                {
-                    case "PUT":
-                        if (parts.Length >= 3) Put(key, parts[2]);
-                        break;
-                    case "DEL":
-                        _index.Remove(key);
-                        _expiry.Remove(key);
-                        break;
-                    case "TTL":
-                        if (parts.Length >= 3 && double.TryParse(parts[2], out var seconds))
-                            _expiry[key] = DateTime.UtcNow.AddSeconds(seconds);
-                        break;
-
-                }
-            }
-        }
-
-        // Rebuild the index from the data file
-        private void RebuildIndex()
-        {
-            _index = new();
-            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
-            long offset = 0;
-            byte[] intBuf = new byte[4];
-
-            while (offset < stream.Length)
-            {
-                stream.Seek(offset, SeekOrigin.Begin);
-                stream.Read(intBuf, 0, 4);
-
-                int keyLength = BitConverter.ToInt32(intBuf);
-
-                stream.Read(intBuf, 0, 4);
-                int valueLength = BitConverter.ToInt32(intBuf);
-
-                byte[] keyBuffer = new byte[keyLength];
-                stream.Read(keyBuffer, 0, keyLength);
-
-                stream.Seek(valueLength, SeekOrigin.Current);
-
-                string key = Encoding.UTF8.GetString(keyBuffer);
-                _index[key] = offset;
-
-                offset = stream.Position;
-            }
-
-            // Setup the memory mapped file
-            _mmf?.Dispose();
-            _accessor.Dispose();
-
-            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
-            _accessor = _mmf.CreateViewAccessor();
         }
 
         public void Compact()
@@ -319,6 +261,106 @@ namespace LowLevelDesigns.StorageEngine
         {
             _accessor?.Dispose();
             _mmf?.Dispose();
+        }
+
+        private void StartTTLBackgroundCleanup()
+        {
+            Task.Run(() =>
+            {
+                while (true)
+                {
+                    Thread.Sleep(5000);
+                    var expiredKeys = new List<string>();
+
+                    lock (ttlLock)
+                    {
+                        foreach(var kvp in _expiry)
+                        {
+                            var key = kvp.Key;
+                            if (DateTime.UtcNow > kvp.Value)
+                                expiredKeys.Add(key);
+                        }
+
+                        foreach(var key in expiredKeys)
+                        {
+                            _expiry.Remove(key);
+                        }
+                    }
+
+                }
+            });
+        }
+
+        private void AppendToWal(string op, string key, string value = "")
+        {
+            File.AppendAllText(_walFilePath, $"{op}|{key}|{value}\n");
+        }
+
+        private void RecoverFromWal()
+        {
+            if (!File.Exists(_walFilePath)) return;
+
+            foreach (var line in File.ReadLines(_walFilePath))
+            {
+                var parts = line.Split("|");
+                if (parts.Length < 2) continue;
+
+                string op = parts[0];
+                string key = parts[1];
+
+                switch (op)
+                {
+                    case "PUT":
+                        if (parts.Length >= 3) Put(key, parts[2]);
+                        break;
+                    case "DEL":
+                        _index.Remove(key);
+                        _expiry.Remove(key);
+                        break;
+                    case "TTL":
+                        if (parts.Length >= 3 && double.TryParse(parts[2], out var seconds))
+                            _expiry[key] = DateTime.UtcNow.AddSeconds(seconds);
+                        break;
+
+                }
+            }
+        }
+
+        // Rebuild the index from the data file
+        private void RebuildIndex()
+        {
+            _index = new();
+            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
+            long offset = 0;
+            byte[] intBuf = new byte[4];
+
+            while (offset < stream.Length)
+            {
+                stream.Seek(offset, SeekOrigin.Begin);
+                stream.Read(intBuf, 0, 4);
+
+                int keyLength = BitConverter.ToInt32(intBuf);
+
+                stream.Read(intBuf, 0, 4);
+                int valueLength = BitConverter.ToInt32(intBuf);
+
+                byte[] keyBuffer = new byte[keyLength];
+                stream.Read(keyBuffer, 0, keyLength);
+
+                stream.Seek(valueLength, SeekOrigin.Current);
+
+                string key = Encoding.UTF8.GetString(keyBuffer);
+                _index[key] = offset;
+
+                offset = stream.Position;
+            }
+
+            // Setup the memory mapped file
+            _mmf?.Dispose();
+            _accessor.Dispose();
+
+            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
+            _accessor = _mmf.CreateViewAccessor();
         }
     }
 }

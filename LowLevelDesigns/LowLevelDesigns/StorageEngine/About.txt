@@ -1,4 +1,4 @@
-Let's walk through a very basic key-value storage engine similar to in concept to HaloDb.
+﻿Let's walk through a very basic key-value storage engine similar to in concept to HaloDb.
 
 What is HaloDb?
 HaloDb is a persistent key-value store inspired by Bitcask, optimized for high throughput and low latency.
@@ -69,20 +69,41 @@ What we will do ?
 	--> modified pages are flushed back to disc (optional)
 
 
-	Steo 4: Add TTL (Time-To-Live)
+Step 4: Add TTL (Time-To-Live)
 
-	What it does?
-	--> Lets you set a key with an expiry
-	--> Expired keys wont be return
-	--> Expired keys are skipped during compaction
-
-
-	Step 5: Add Snapshot / Checkpoint
-	What we'll do ?
-	--> Save current index +TTL metadata
-	--> On startup optionally load the snapshot instead of replying WAL
+What it does?
+--> Lets you set a key with an expiry
+--> Expired keys wont be return
+--> Expired keys are skipped during compaction
 
 
+Step 5: Add Snapshot / Checkpoint
+What we'll do ?
+--> Save current index +TTL metadata
+--> On startup optionally load the snapshot instead of replying WAL
+
+Step 6: Add Bloom Filters
+
+-->What is a bloom filter ? --> A bloom filter is a space efficient probabilistic data structure used to test whether a key might exist in a dataset --- zero false negatives and some false positives.
+-->Why its useful ? Prevents unneccessary disc checks. If bloom filter says, "definetly not present" we avoid disc checks
+--> Example use: Before doing a get(key), we ask the bloom filter "Is the key possibly in db?"
+If it says “not present” → the key is definitely not in the DB.
+If it says “might be present” → the key may or may not be there (we confirm by checking disk).
+It's super fast and uses very little memory, at the cost of false positives (but no false negatives).
+
+Step 6: TTL Cleanup
+TTL is a lifespan, that you assign to a key, after which the key is considered expired.
+
+--> Why do we need background cleanup?
+--> Keeps your data fresh
+--> Frees up space by removing expired keys
+--> Prevents stale values from being accessed
+
+Strategy:
+Store each key's expiration timestamp
+Spawn a background thread than runs every few seconds
+It scans the in-memory TTL index
+Deletes the expired entries and logs it
 
 
 
