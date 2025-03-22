@@ -91,7 +91,7 @@ If it says “not present” → the key is definitely not in the DB.
 If it says “might be present” → the key may or may not be there (we confirm by checking disk).
 It's super fast and uses very little memory, at the cost of false positives (but no false negatives).
 
-Step 6: TTL Cleanup
+Step 7: TTL Cleanup
 TTL is a lifespan, that you assign to a key, after which the key is considered expired.
 
 --> Why do we need background cleanup?
@@ -104,6 +104,35 @@ Store each key's expiration timestamp
 Spawn a background thread than runs every few seconds
 It scans the in-memory TTL index
 Deletes the expired entries and logs it
+
+
+Step 8: Segmented Data Files
+	Instead of writing all key-value pairs into one big file, we break them into smaller files called segements:
+	segment_1.db
+	segment_2.db
+	segment_3.db
+	....
+
+	Why we do this ?
+	--> Easier compaction --> We can delete/merge individual segment
+	--> Faster writes --> We can write to a new file instead of rewriting the old
+	--> Support for LSM trees
+
+	Strategy:
+	--> We maintain an active segment for current writes
+	--> Once it exceeds a max size (10MB), we roll over to a new segment file
+	--> Maintain an in-memory index to track which key is in which segment
+	--> On Get(), we check newer segment first
+
+Later What we will code:
+Step 9: LRU Cache:
+	--> An LRU cache stores the most recently used key-value pair in memory
+	--> If the cache is full evicts the least recently used items
+	Why use it ?
+	--> Faster reads, No disc read if the key is already in memory
+	--> Prevents disc IO overload, easpecially for frequently accessed keys
+	--> Smart memory use, keeps recent hot data in fast-access memory
+
 
 
 

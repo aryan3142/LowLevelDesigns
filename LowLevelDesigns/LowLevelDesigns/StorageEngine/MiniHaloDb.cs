@@ -11,7 +11,14 @@ namespace LowLevelDesigns.StorageEngine
     {
         private readonly string _dataFilePath = "data.db";
         private readonly string _walFilePath = "wal.log";
-        private FileStream _dataStream;
+        private const long SegmentMaxSize = 10 * 1024 * 1024;
+        private string dataDir = "data";
+        private int currentSegmentNumber = 0;
+
+        private string activeSegmentPath;
+        private FileStream activeSegmentStream;
+        private Dictionary<string, (int segmentNumber, long offset)> keyIndex = new();
+
         private MemoryMappedFile _mmf;
         private MemoryMappedViewAccessor _accessor;
         private Dictionary<string, DateTime> _expiry = new();
@@ -25,11 +32,35 @@ namespace LowLevelDesigns.StorageEngine
         /// </summary>
         public MiniHaloDb()
         {
-            _dataStream = new FileStream(_dataFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
             bloomFilter = new BloomFilter(10000, 3);
+            if (!Directory.Exists(dataDir))
+                Directory.CreateDirectory(dataDir);
+
+            LoadLastSegment();
             RebuildIndex();
-            RecoverFromWal();
             StartTTLBackgroundCleanup();
+
+            //RecoverFromWal(); // Needs update
+        }
+
+
+        private void LoadLastSegment()
+        {
+            var files = Directory.GetFiles(dataDir, "segment_*.db").OrderBy(x => x).ToList();
+
+            if (files.Any())
+            {
+                string last = files.Last();
+                currentSegmentNumber = int.Parse(Path.GetFileNameWithoutExtension(last).Split('_')[1]);
+            }
+
+            OpenNewSegment();
+        }
+
+        private void OpenNewSegment()
+        {
+            activeSegmentPath = Path.Combine(dataDir, $"segment_{currentSegmentNumber}.db");
+            activeSegmentStream = new FileStream(activeSegmentPath, FileMode.Append, FileAccess.Write, FileShare.Read);
         }
 
         public void PutWithTTL(string key, string value, TimeSpan ttl)
@@ -50,7 +81,7 @@ namespace LowLevelDesigns.StorageEngine
                 _lock.EnterWriteLock();
 
                 // Gets the current position of this stream
-                long offset = _dataStream.Position;
+                long offset = activeSegmentStream.Position;
 
                 // Encodes all the character in a specified string to a sequence of bytes
                 // WHy is it required ?
@@ -64,11 +95,11 @@ namespace LowLevelDesigns.StorageEngine
                 // How many bytes to read for the key
                 // How many bytes to read for the value
                 // BitConverter.GetBytes(int) converts the length to a 4-byte binary format.
-                _dataStream.Write(BitConverter.GetBytes(keyBytes.Length));
-                _dataStream.Write(BitConverter.GetBytes(valueBytes.Length));
-                _dataStream.Write(keyBytes);
-                _dataStream.Write(valueBytes);
-                _dataStream.Flush();
+                activeSegmentStream.Write(BitConverter.GetBytes(keyBytes.Length));
+                activeSegmentStream.Write(BitConverter.GetBytes(valueBytes.Length));
+                activeSegmentStream.Write(keyBytes);
+                activeSegmentStream.Write(valueBytes);
+                activeSegmentStream.Flush();
 
                 // Now that lengths are written we can safely store the data
                 // Later when reading,
@@ -77,10 +108,20 @@ namespace LowLevelDesigns.StorageEngine
                 // then read key length bytes for the key
                 // and value length bytes for the value
                 // Final format: [keylength: 4 bytes for key][valuelength: 4 bytes of value][key (Nbytes][value (mbytes)]
-                _index[key] = offset;
+                keyIndex[key] = (currentSegmentNumber, offset);
+                
+                //_index[key] = offset;
+
                 _expiry.Remove(key);
                 AppendToWal("PUT", key, value);
                 bloomFilter.Add(key);
+
+                if(activeSegmentStream.Length > SegmentMaxSize)
+                {
+                    activeSegmentStream.Dispose();
+                    currentSegmentNumber++;
+                    OpenNewSegment();
+                }
             }
             finally
             {
@@ -101,9 +142,10 @@ namespace LowLevelDesigns.StorageEngine
             _lock.EnterReadLock();
             try
             {
-                if (!_index.ContainsKey(key)) return null;
+                if (!keyIndex.TryGetValue(key, out var info)) return null;
 
-                long offset = _index[key];
+                int segmentNumber = keyIndex[key].segmentNumber;
+                long offset = keyIndex[key].offset;
                 /*using var fileStream = new FileStream(_dataFilePath, FileMode.Append, FileAccess.Read);
                 fileStream.Seek(offset, SeekOrigin.Begin);
 
@@ -121,14 +163,39 @@ namespace LowLevelDesigns.StorageEngine
                 byte[] valueBuffer = new byte[valLen];
                 fileStream.Read(valueBuffer, 0, valLen);*/
 
-                int keylen = _accessor.ReadInt32(offset);
-                int vallen = _accessor.ReadInt32(offset + 4);
+                if(segmentNumber == currentSegmentNumber)
+                {
+                    int keylen = _accessor.ReadInt32(offset);
+                    int vallen = _accessor.ReadInt32(offset + 4);
 
-                long valStart = offset + 8 + keylen;
-                byte[] valBuf = new byte[vallen];
-                _accessor.ReadArray(valStart, valBuf, 0, vallen);
+                    long valStart = offset + 8 + keylen;
+                    byte[] valBuf = new byte[vallen];
+                    _accessor.ReadArray(valStart, valBuf, 0, vallen);
 
-                return Encoding.UTF8.GetString(valBuf);
+                    return Encoding.UTF8.GetString(valBuf);
+                }
+                else
+                {
+                    string segmentPath = $"segment_{segmentNumber}.db";
+                    using var segmentStream = new FileStream(segmentPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    segmentStream.Seek(offset, SeekOrigin.Begin);
+
+                    byte[] buffer = new byte[4];
+                    segmentStream.Read(buffer, 0, 4);
+                    int keyLen = BitConverter.ToInt32(buffer);
+
+                    segmentStream.Read(buffer, 0, 4);
+                    int valueLen = BitConverter.ToInt32(buffer);
+
+                    byte[] keyBuffer = new byte[keyLen];
+                    byte[] valBuffer = new byte[valueLen];
+
+                    segmentStream.Read(keyBuffer, 0, keyLen);
+                    segmentStream.Read(valBuffer, 0, valueLen);
+
+                    return Encoding.UTF8.GetString(valBuffer);
+                }
+
             }
             finally
             {
@@ -198,6 +265,7 @@ namespace LowLevelDesigns.StorageEngine
             }
         }
 
+        // Needs update after implementing segmentation of files
         public void CreateSnapShot(string filePath = "snapshot.meta")
         {
             _lock.EnterWriteLock();
@@ -225,6 +293,7 @@ namespace LowLevelDesigns.StorageEngine
             }
         }
 
+        // Needs update after implementing segmentation of files
         public void LoadSnapshot(string filePath = "snapshot.meta")
         {
             _lock.EnterWriteLock();
@@ -329,8 +398,7 @@ namespace LowLevelDesigns.StorageEngine
         // Rebuild the index from the data file
         private void RebuildIndex()
         {
-            _index = new();
-            using var stream = new FileStream(_dataFilePath, FileMode.Open, FileAccess.Read);
+            using var stream = new FileStream(activeSegmentPath, FileMode.Open, FileAccess.Read);
             long offset = 0;
             byte[] intBuf = new byte[4];
 
@@ -350,7 +418,9 @@ namespace LowLevelDesigns.StorageEngine
                 stream.Seek(valueLength, SeekOrigin.Current);
 
                 string key = Encoding.UTF8.GetString(keyBuffer);
-                _index[key] = offset;
+
+                keyIndex[key] = (currentSegmentNumber, offset);
+                //_index[key] = offset;
 
                 offset = stream.Position;
             }
@@ -359,7 +429,7 @@ namespace LowLevelDesigns.StorageEngine
             _mmf?.Dispose();
             _accessor.Dispose();
 
-            _mmf = MemoryMappedFile.CreateFromFile(_dataFilePath, FileMode.Open, "mmf");
+            _mmf = MemoryMappedFile.CreateFromFile(activeSegmentPath, FileMode.Open, "mmf");
             _accessor = _mmf.CreateViewAccessor();
         }
     }
