@@ -29,7 +29,6 @@
             {
                 cache[key].Value =(key,value);
                 lru.Remove(cache[key]);
-                lru.AddFirst(cache[key]);
             }
             else if(lru.Count >= capacity)
             {
