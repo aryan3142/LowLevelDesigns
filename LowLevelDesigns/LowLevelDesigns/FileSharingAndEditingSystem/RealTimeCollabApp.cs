@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using Microsoft.AspNetCore.Mvc;
 using System.Net;
+using Microsoft.Extensions.Hosting;
 
 namespace LowLevelDesigns.FileSharingAndEditingSystem
 {
@@ -25,7 +26,7 @@ namespace LowLevelDesigns.FileSharingAndEditingSystem
         }
 
         // This is used to configure the request processing pipeline, here you add middleware components
-        public void Configure(IApplicationBuilder app, IHostingEnvironment env)
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
         {
             if (env.IsDevelopment())
             {
@@ -105,8 +106,18 @@ namespace LowLevelDesigns.FileSharingAndEditingSystem
         }
     }
 
-    public class RealTimeCollabApp
+    public class Program
     {
+        public static void Main(string[] args)
+        {
+            var host = Host.CreateDefaultBuilder(args)
+                .ConfigureWebHostDefaults(webBuilder =>
+                {
+                    webBuilder.UseStartup<Startup>();
+                })
+                .Build();
 
+            host.Run();
+        }
     }
 }

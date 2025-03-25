@@ -56,10 +56,17 @@ namespace LowLevelDesigns.FileSharingAndEditingSystem
 
         private void ApplyOperationalTransformation(string documentId, Operation operation)
         {
+            // Ensures that document exists in _documentState
             _documentStates.AddOrUpdate(documentId, "", (key, oldValue) => oldValue);
+
+            // Retrieves the list of operations for the document, if it doesn't exist, creates a new list
+            // Retrives past operations
             _documentOperations.AddOrUpdate(documentId, new List<Operation>(), (key, oldValue) => oldValue);
 
+            // Calls transformationOpertion to adjust new operation's position based on past edits
             var transformedOp = TransformOperation(documentId, operation);
+
+            // Inserts the transformed operation into the document state
             var currentState = _documentStates[documentId];
             _documentStates[documentId] = currentState.Insert(transformedOp.Position, transformedOp.Text);
             _documentOperations[documentId].Add(transformedOp);
@@ -67,6 +74,8 @@ namespace LowLevelDesigns.FileSharingAndEditingSystem
 
         private Operation TransformOperation(string documentId, Operation newOp)
         {
+            // Adjusts the position of the new operation by checking the previous applied operations
+            // If a previous operation inserted text before the new one, the new one's position shifts forward
             foreach (var prevOp in _documentOperations.GetValueOrDefault(documentId, new List<Operation>()))
             {
                 if (newOp.Position >= prevOp.Position)
